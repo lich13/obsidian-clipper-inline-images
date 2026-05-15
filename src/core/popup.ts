@@ -23,6 +23,7 @@ import { sanitizeFileName } from '../utils/string-utils';
 import { saveFile } from '../utils/file-utils';
 import { translatePage, getMessage, setupLanguageAndDirection } from '../utils/i18n';
 import { formatPropertyValue } from '../utils/shared';
+import { inlineRemoteImages } from '../utils/inline-images';
 
 interface ReaderModeResponse {
 	success: boolean;
@@ -69,6 +70,21 @@ function getPropertiesFromDOM(): Property[] {
 			value: inputElement.type === 'checkbox' ? inputElement.checked : inputElement.value
 		};
 	}) as Property[];
+}
+
+async function buildFileContentWithInlineImages(properties: Property[], noteContent: string): Promise<string> {
+	const frontmatter = await generateFrontmatter(properties);
+	const result = await inlineRemoteImages(noteContent);
+
+	if (result.stats.found > 0) {
+		debugLog('Images', `Inlined ${result.stats.converted}/${result.stats.found} remote images`);
+	}
+
+	if (result.stats.failed > 0) {
+		console.warn('[Obsidian Clipper] Some images could not be inlined:', result.stats.errors);
+	}
+
+	return frontmatter + result.markdown;
 }
 
 // Helper function to get tab info from background script
@@ -467,8 +483,7 @@ function setupEventListeners(tabId: number) {
 			const properties = getPropertiesFromDOM();
 
 			const noteContentField = document.getElementById('note-content-field') as HTMLTextAreaElement;
-			const frontmatter = await generateFrontmatter(properties);
-			const fileContent = frontmatter + noteContentField.value;
+			const fileContent = await buildFileContentWithInlineImages(properties, noteContentField.value);
 			
 			await copyToClipboard(fileContent);
 		});
@@ -486,52 +501,45 @@ function setupEventListeners(tabId: number) {
 				const properties = getPropertiesFromDOM();
 
 				const noteContentField = document.getElementById('note-content-field') as HTMLTextAreaElement;
-				
-				// Use Promise.all to prepare the data
-				Promise.all([
-					generateFrontmatter(properties),
-					Promise.resolve(noteContentField.value)
-				]).then(([frontmatter, noteContent]) => {
-					const fileContent = frontmatter + noteContent;
-					
-					// Call share directly from the click handler
-					const noteNameField = document.getElementById('note-name-field') as HTMLInputElement;
-					let fileName = noteNameField?.value || 'untitled';
-					fileName = sanitizeFileName(fileName);
-					if (!fileName.toLowerCase().endsWith('.md')) {
-						fileName += '.md';
+				const fileContent = await buildFileContentWithInlineImages(properties, noteContentField.value);
+
+				// Call share directly from the click handler
+				const noteNameField = document.getElementById('note-name-field') as HTMLInputElement;
+				let fileName = noteNameField?.value || 'untitled';
+				fileName = sanitizeFileName(fileName);
+				if (!fileName.toLowerCase().endsWith('.md')) {
+					fileName += '.md';
+				}
+
+				if (navigator.share && navigator.canShare) {
+					const blob = new Blob([fileContent], { type: 'text/markdown;charset=utf-8' });
+					const file = new File([blob], fileName, { type: 'text/markdown;charset=utf-8' });
+
+					const shareData = {
+						files: [file],
+						text: 'Shared from Obsidian Web Clipper'
+					};
+
+					if (navigator.canShare(shareData)) {
+						const pathField = document.getElementById('path-name-field') as HTMLInputElement;
+						const vaultDropdown = document.getElementById('vault-select') as HTMLSelectElement;
+						const path = pathField?.value || '';
+						const vault = vaultDropdown?.value || '';
+
+						navigator.share(shareData)
+							.then(async () => {
+								const tabInfo = await getCurrentTabInfo();
+								await incrementStat('share', vault, path, tabInfo.url, tabInfo.title);
+								const moreDropdown = document.getElementById('more-dropdown');
+								if (moreDropdown) {
+									moreDropdown.classList.remove('show');
+								}
+							})
+							.catch((error) => {
+								console.error('Error sharing:', error);
+							});
 					}
-
-					if (navigator.share && navigator.canShare) {
-						const blob = new Blob([fileContent], { type: 'text/markdown;charset=utf-8' });
-						const file = new File([blob], fileName, { type: 'text/markdown;charset=utf-8' });
-						
-						const shareData = {
-							files: [file],
-							text: 'Shared from Obsidian Web Clipper'
-						};
-
-						if (navigator.canShare(shareData)) {
-							const pathField = document.getElementById('path-name-field') as HTMLInputElement;
-							const vaultDropdown = document.getElementById('vault-select') as HTMLSelectElement;
-							const path = pathField?.value || '';
-							const vault = vaultDropdown?.value || '';
-
-							navigator.share(shareData)
-								.then(async () => {
-									const tabInfo = await getCurrentTabInfo();
-									await incrementStat('share', vault, path, tabInfo.url, tabInfo.title);
-									const moreDropdown = document.getElementById('more-dropdown');
-									if (moreDropdown) {
-											moreDropdown.classList.remove('show');
-									}
-								})
-								.catch((error) => {
-									console.error('Error sharing:', error);
-								});
-						}
-					}
-				});
+				}
 			});
 		});
 	}
@@ -1251,8 +1259,7 @@ async function handleSaveToDownloads() {
 		const properties = getPropertiesFromDOM();
 
 		const noteContentField = document.getElementById('note-content-field') as HTMLTextAreaElement;
-		const frontmatter = await generateFrontmatter(properties);
-		const fileContent = frontmatter + noteContentField.value;
+		const fileContent = await buildFileContentWithInlineImages(properties, noteContentField.value);
 
 		await saveFile({
 			content: fileContent,
@@ -1337,8 +1344,7 @@ async function handleClipObsidian(): Promise<void> {
 		// Gather content
 		const properties = getPropertiesFromDOM();
 
-		const frontmatter = await generateFrontmatter(properties);
-		const fileContent = frontmatter + noteContentField.value;
+		const fileContent = await buildFileContentWithInlineImages(properties, noteContentField.value);
 
 		// Save to Obsidian
 		const selectedVault = vaultDropdown.value || currentTemplate.vault || '';
@@ -1403,8 +1409,7 @@ async function copyContent() {
 	const properties = getPropertiesFromDOM();
 
 	const noteContentField = document.getElementById('note-content-field') as HTMLTextAreaElement;
-	const frontmatter = await generateFrontmatter(properties);
-	const fileContent = frontmatter + noteContentField.value;
+	const fileContent = await buildFileContentWithInlineImages(properties, noteContentField.value);
 	await copyToClipboard(fileContent);
 }
 

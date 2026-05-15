@@ -2,20 +2,31 @@ import { describe, test, expect, vi, beforeAll, afterAll } from 'vitest';
 import { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, basename, extname } from 'path';
 import { parseHTML } from 'linkedom';
-import DefuddleClass from 'defuddle';
-import { createMarkdownContent } from 'defuddle/full';
 import { buildVariables, generateFrontmatter, formatPropertyValue } from './shared';
-import { compileTemplate } from './template-compiler';
-import { createAsyncResolver, createSelectorProcessor } from '../api';
 
 // ---------------------------------------------------------------------------
 // Freeze time so {{date}} is deterministic in expected output
 // ---------------------------------------------------------------------------
 
 const FROZEN_DATE = new Date('2025-01-15T12:00:00Z');
+const FIXTURE_TZ = 'America/Los_Angeles';
 
-beforeAll(() => { vi.useFakeTimers({ now: FROZEN_DATE }); });
-afterAll(() => { vi.useRealTimers(); });
+let originalTimeZone: string | undefined;
+
+beforeAll(() => {
+	originalTimeZone = process.env.TZ;
+	process.env.TZ = FIXTURE_TZ;
+	vi.useFakeTimers({ now: FROZEN_DATE });
+});
+
+afterAll(() => {
+	vi.useRealTimers();
+	if (originalTimeZone === undefined) {
+		delete process.env.TZ;
+	} else {
+		process.env.TZ = originalTimeZone;
+	}
+});
 
 // ---------------------------------------------------------------------------
 // Fixture types
@@ -29,59 +40,92 @@ interface FixtureTemplate {
 
 async function runFixture(html: string, url: string, template: FixtureTemplate): Promise<string> {
 	const { document } = parseHTML(html);
+	const globalAny = globalThis as any;
+	const linkedomWindow = document.defaultView as any;
+	const previousGlobals = {
+		document: globalAny.document,
+		window: globalAny.window,
+		DOMParser: globalAny.DOMParser,
+		Node: globalAny.Node,
+		Element: globalAny.Element,
+		HTMLElement: globalAny.HTMLElement,
+		XMLSerializer: globalAny.XMLSerializer,
+	};
 
-	// Run defuddle — same as CLI
-	const defuddle = new DefuddleClass(document as unknown as Document, { url });
-	const defuddleResult = defuddle.parse();
-	const markdownContent = createMarkdownContent(defuddleResult.content, url);
+	globalAny.document = document;
+	globalAny.window = linkedomWindow;
+	globalAny.DOMParser = linkedomWindow.DOMParser;
+	globalAny.Node = linkedomWindow.Node;
+	globalAny.Element = linkedomWindow.Element;
+	globalAny.HTMLElement = linkedomWindow.HTMLElement;
+	globalAny.XMLSerializer = linkedomWindow.XMLSerializer;
 
-	// Build variables from defuddle output — same as CLI
-	const variables = buildVariables({
-		title: defuddleResult.title,
-		author: defuddleResult.author,
-		content: markdownContent,
-		contentHtml: defuddleResult.content,
-		url,
-		fullHtml: html,
-		description: defuddleResult.description,
-		favicon: defuddleResult.favicon,
-		image: defuddleResult.image,
-		published: defuddleResult.published,
-		site: defuddleResult.site,
-		language: defuddleResult.language,
-		wordCount: defuddleResult.wordCount,
-		schemaOrgData: defuddleResult.schemaOrgData,
-		metaTags: defuddleResult.metaTags,
-		extractedContent: defuddleResult.variables,
-	});
+	try {
+		const { default: DefuddleClass, createMarkdownContent } = await import('defuddle/full');
+		const { compileTemplate } = await import('./template-compiler');
+		const { createAsyncResolver, createSelectorProcessor } = await import('../api');
 
-	const asyncResolver = createAsyncResolver(document);
-	const selectorProcessor = createSelectorProcessor(document);
+		// Run defuddle — same as CLI
+		const defuddle = new DefuddleClass(document as unknown as Document, { url });
+		const defuddleResult = defuddle.parse();
+		const markdownContent = createMarkdownContent(defuddleResult.content, url);
 
-	const compileFn = (text: string) =>
-		compileTemplate(0, text, variables, url, asyncResolver, selectorProcessor);
+		// Build variables from defuddle output — same as CLI
+		const variables = buildVariables({
+			title: defuddleResult.title,
+			author: defuddleResult.author,
+			content: markdownContent,
+			contentHtml: defuddleResult.content,
+			url,
+			fullHtml: html,
+			description: defuddleResult.description,
+			favicon: defuddleResult.favicon,
+			image: defuddleResult.image,
+			published: defuddleResult.published,
+			site: defuddleResult.site,
+			language: defuddleResult.language,
+			wordCount: defuddleResult.wordCount,
+			schemaOrgData: defuddleResult.schemaOrgData,
+			metaTags: defuddleResult.metaTags,
+			extractedContent: defuddleResult.variables,
+		});
 
-	// Compile properties with type-aware formatting
-	const compiledProperties = await Promise.all(
-		template.properties.map(async (prop) => {
-			let value = await compileFn(prop.value);
-			value = formatPropertyValue(value, prop.type, prop.value);
-			return { name: prop.name, value };
-		})
-	);
+		const asyncResolver = createAsyncResolver(document);
+		const selectorProcessor = createSelectorProcessor(document);
 
-	// Build type map from template properties
-	const typeMap: Record<string, string> = {};
-	for (const prop of template.properties) {
-		if (prop.type) {
-			typeMap[prop.name] = prop.type;
+		const compileFn = (text: string) =>
+			compileTemplate(0, text, variables, url, asyncResolver, selectorProcessor);
+
+		// Compile properties with type-aware formatting
+		const compiledProperties = await Promise.all(
+			template.properties.map(async (prop) => {
+				let value = await compileFn(prop.value);
+				value = formatPropertyValue(value, prop.type, prop.value);
+				return { name: prop.name, value };
+			})
+		);
+
+		// Build type map from template properties
+		const typeMap: Record<string, string> = {};
+		for (const prop of template.properties) {
+			if (prop.type) {
+				typeMap[prop.name] = prop.type;
+			}
 		}
+
+		const frontmatter = generateFrontmatter(compiledProperties, typeMap);
+		const compiledContent = await compileFn(template.noteContentFormat);
+
+		return frontmatter ? frontmatter + compiledContent : compiledContent;
+	} finally {
+		globalAny.document = previousGlobals.document;
+		globalAny.window = previousGlobals.window;
+		globalAny.DOMParser = previousGlobals.DOMParser;
+		globalAny.Node = previousGlobals.Node;
+		globalAny.Element = previousGlobals.Element;
+		globalAny.HTMLElement = previousGlobals.HTMLElement;
+		globalAny.XMLSerializer = previousGlobals.XMLSerializer;
 	}
-
-	const frontmatter = generateFrontmatter(compiledProperties, typeMap);
-	const compiledContent = await compileFn(template.noteContentFormat);
-
-	return frontmatter ? frontmatter + compiledContent : compiledContent;
 }
 
 // ---------------------------------------------------------------------------

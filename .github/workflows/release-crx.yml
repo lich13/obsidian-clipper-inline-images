@@ -1,0 +1,92 @@
+name: Build and publish CRX
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Restore CRX private key
+        env:
+          CRX_PRIVATE_KEY_PEM: ${{ secrets.CRX_PRIVATE_KEY_PEM }}
+        run: |
+          if [ -z "$CRX_PRIVATE_KEY_PEM" ]; then
+            echo "Missing CRX_PRIVATE_KEY_PEM repository secret." >&2
+            exit 1
+          fi
+          mkdir -p build/keys
+          printf '%s\n' "$CRX_PRIVATE_KEY_PEM" > build/keys/obsidian-web-clipper-inline-images.pem
+
+      - name: Build CRX
+        run: npm run build:crx
+
+      - name: Upload CRX artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: obsidian-web-clipper-inline-images-crx
+          path: builds/crx/*
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: builds/crx
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Download CRX artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: obsidian-web-clipper-inline-images-crx
+          path: builds/crx
+
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" builds/crx/* --title "$GITHUB_REF_NAME" --notes "CRX build for $GITHUB_REF_NAME"

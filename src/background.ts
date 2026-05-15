@@ -301,12 +301,67 @@ async function nativeFetch(url: string, options?: any): Promise<{ ok: boolean; s
 	}
 }
 
+async function fetchImageAsDataUri(url: string): Promise<{ success: boolean; dataUri?: string; error?: string }> {
+	try {
+		const response = await fetch(url, {
+			credentials: 'include',
+			cache: 'force-cache'
+		});
+		if (!response.ok) {
+			return { success: false, error: `HTTP ${response.status}` };
+		}
+
+		const mimeType = getImageMimeType(response.headers.get('content-type') || '', response.url || url);
+		const dataUri = `data:${mimeType};base64,${arrayBufferToBase64(await response.arrayBuffer())}`;
+		return { success: true, dataUri };
+	} catch (error) {
+		return { success: false, error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+function getImageMimeType(contentType: string, url: string): string {
+	const normalizedContentType = contentType.split(';')[0].trim().toLowerCase();
+	if (normalizedContentType.startsWith('image/')) {
+		return normalizedContentType;
+	}
+
+	let pathname = url;
+	try {
+		pathname = new URL(url).pathname;
+	} catch {
+		// Use the raw URL as a fallback for extension and malformed URLs.
+	}
+
+	pathname = pathname.toLowerCase();
+	if (pathname.endsWith('.png')) return 'image/png';
+	if (pathname.endsWith('.jpg') || pathname.endsWith('.jpeg')) return 'image/jpeg';
+	if (pathname.endsWith('.webp')) return 'image/webp';
+	if (pathname.endsWith('.gif')) return 'image/gif';
+	if (pathname.endsWith('.svg')) return 'image/svg+xml';
+	if (pathname.endsWith('.avif')) return 'image/avif';
+	return 'image/jpeg';
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+	let binary = '';
+	const bytes = new Uint8Array(buffer);
+	const chunkSize = 0x1000;
+	for (let index = 0; index < bytes.length; index += chunkSize) {
+		const chunk = bytes.subarray(index, index + chunkSize);
+		binary += String.fromCharCode(...chunk);
+	}
+	return btoa(binary);
+}
+
 // Fetch proxy for extension pages (reader, highlights).
 // Returns a Promise for the webextension-polyfill.
 // On Firefox MV3, host_permissions require explicit user grant —
 // callers detect CORS_PERMISSION_NEEDED and prompt via permissions.request().
 browser.runtime.onMessage.addListener((request: unknown) => {
 	if (typeof request !== 'object' || request === null) return;
+	if ((request as any).action === 'fetchImageAsDataUri') {
+		return fetchImageAsDataUri((request as any).url);
+	}
 	if ((request as any).action !== 'fetchProxy') return;
 	const { url, options } = request as { url: string; options?: any };
 	const fetchOptions: RequestInit = {};
@@ -329,7 +384,7 @@ browser.runtime.onMessage.addListener((request: unknown) => {
 			}
 			return { ok: false, status: 0, text: '', error: 'CORS_PERMISSION_NEEDED' };
 		});
-});
+	});
 
 browser.runtime.onMessage.addListener((request: unknown, sender: browser.Runtime.MessageSender, sendResponse: (response?: any) => void): true | undefined => {
 	if (typeof request === 'object' && request !== null) {
