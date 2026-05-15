@@ -99,4 +99,4 @@ jobs:
       - name: Publish tagged release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" builds/crx/* --title "$GITHUB_REF_NAME" --notes "CRX build for $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" builds/crx/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "CRX build for $GITHUB_REF_NAME"
