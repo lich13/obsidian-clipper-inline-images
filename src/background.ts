@@ -5,6 +5,7 @@ import { TextHighlightData } from './utils/highlighter';
 import { debounce } from './utils/debounce';
 import { Settings } from './types/types';
 import { debugLog } from './utils/debug';
+import { fetchWithPageReferer } from './utils/referer-fetch';
 
 const YOUTUBE_EMBED_RULE_ID = 9001;
 const YOUTUBE_INNERTUBE_RULE_ID = 9002;
@@ -323,16 +324,7 @@ async function fetchImageAsDataUri(url: string, referrerUrl?: string, tabId?: nu
 
 async function fetchImageAsDataUriFromBackground(url: string, referrerUrl?: string): Promise<FetchImageAsDataUriResult> {
 	try {
-		const fetchOptions: RequestInit = {
-			credentials: 'include',
-			cache: 'force-cache'
-		};
-		if (referrerUrl && /^https?:\/\//i.test(referrerUrl)) {
-			fetchOptions.referrer = referrerUrl;
-			fetchOptions.referrerPolicy = 'unsafe-url';
-		}
-
-		const response = await fetch(url, fetchOptions);
+		const response = await fetchWithPageReferer(url, referrerUrl);
 		if (!response.ok) {
 			return { success: false, error: `HTTP ${response.status}` };
 		}

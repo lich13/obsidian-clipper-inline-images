@@ -200,7 +200,7 @@ async function directFetchImageAsDataUri(url: string, referrerUrl?: string): Pro
 function buildImageFetchOptions(referrerUrl?: string): RequestInit {
 	const options: RequestInit = {
 		credentials: 'include',
-		cache: 'force-cache'
+		cache: 'no-store'
 	};
 
 	if (referrerUrl && isRemoteHttpImageUrl(referrerUrl)) {
