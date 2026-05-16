@@ -301,12 +301,38 @@ async function nativeFetch(url: string, options?: any): Promise<{ ok: boolean; s
 	}
 }
 
-async function fetchImageAsDataUri(url: string): Promise<{ success: boolean; dataUri?: string; error?: string }> {
+interface FetchImageAsDataUriResult {
+	success: boolean;
+	dataUri?: string;
+	error?: string;
+}
+
+async function fetchImageAsDataUri(url: string, referrerUrl?: string, tabId?: number): Promise<FetchImageAsDataUriResult> {
+	const backgroundResult = await fetchImageAsDataUriFromBackground(url, referrerUrl);
+	if (backgroundResult.success) {
+		return backgroundResult;
+	}
+
+	const pageResult = await fetchImageAsDataUriFromPage(url, tabId);
+	if (pageResult.success) {
+		return pageResult;
+	}
+
+	return backgroundResult;
+}
+
+async function fetchImageAsDataUriFromBackground(url: string, referrerUrl?: string): Promise<FetchImageAsDataUriResult> {
 	try {
-		const response = await fetch(url, {
+		const fetchOptions: RequestInit = {
 			credentials: 'include',
 			cache: 'force-cache'
-		});
+		};
+		if (referrerUrl && /^https?:\/\//i.test(referrerUrl)) {
+			fetchOptions.referrer = referrerUrl;
+			fetchOptions.referrerPolicy = 'unsafe-url';
+		}
+
+		const response = await fetch(url, fetchOptions);
 		if (!response.ok) {
 			return { success: false, error: `HTTP ${response.status}` };
 		}
@@ -314,6 +340,23 @@ async function fetchImageAsDataUri(url: string): Promise<{ success: boolean; dat
 		const mimeType = getImageMimeType(response.headers.get('content-type') || '', response.url || url);
 		const dataUri = `data:${mimeType};base64,${arrayBufferToBase64(await response.arrayBuffer())}`;
 		return { success: true, dataUri };
+	} catch (error) {
+		return { success: false, error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+async function fetchImageAsDataUriFromPage(url: string, tabId?: number): Promise<FetchImageAsDataUriResult> {
+	if (!tabId) {
+		return { success: false, error: 'No source tab for page image fetch' };
+	}
+
+	try {
+		await ensureContentScriptLoadedInBackground(tabId);
+		const response = await browser.tabs.sendMessage(tabId, {
+			action: 'fetchImageAsDataUriFromPage',
+			url
+		}) as FetchImageAsDataUriResult;
+		return response || { success: false, error: 'Empty page image fetch response' };
 	} catch (error) {
 		return { success: false, error: error instanceof Error ? error.message : String(error) };
 	}
@@ -357,10 +400,11 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 // Returns a Promise for the webextension-polyfill.
 // On Firefox MV3, host_permissions require explicit user grant —
 // callers detect CORS_PERMISSION_NEEDED and prompt via permissions.request().
-browser.runtime.onMessage.addListener((request: unknown) => {
+browser.runtime.onMessage.addListener((request: unknown, sender: browser.Runtime.MessageSender) => {
 	if (typeof request !== 'object' || request === null) return;
 	if ((request as any).action === 'fetchImageAsDataUri') {
-		return fetchImageAsDataUri((request as any).url);
+		const imageRequest = request as { url: string; referrerUrl?: string; tabId?: number };
+		return fetchImageAsDataUri(imageRequest.url, imageRequest.referrerUrl, imageRequest.tabId || sender.tab?.id);
 	}
 	if ((request as any).action !== 'fetchProxy') return;
 	const { url, options } = request as { url: string; options?: any };

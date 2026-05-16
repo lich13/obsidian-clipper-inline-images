@@ -72,9 +72,8 @@ function getPropertiesFromDOM(): Property[] {
 	}) as Property[];
 }
 
-async function buildFileContentWithInlineImages(properties: Property[], noteContent: string): Promise<string> {
-	const frontmatter = await generateFrontmatter(properties);
-	const result = await inlineRemoteImages(noteContent);
+async function inlineNoteContentImages(noteContent: string, referrerUrl = ''): Promise<string> {
+	const result = await inlineRemoteImages(noteContent, { referrerUrl, tabId: currentTabId });
 
 	if (result.stats.found > 0) {
 		debugLog('Images', `Inlined ${result.stats.converted}/${result.stats.found} remote images`);
@@ -84,7 +83,26 @@ async function buildFileContentWithInlineImages(properties: Property[], noteCont
 		console.warn('[Obsidian Clipper] Some images could not be inlined:', result.stats.errors);
 	}
 
-	return frontmatter + result.markdown;
+	return result.markdown;
+}
+
+async function getCurrentReferrerUrl(): Promise<string> {
+	if (!currentTabId) return '';
+
+	try {
+		return (await getTabInfo(currentTabId)).url || '';
+	} catch (error) {
+		console.warn('[Obsidian Clipper] Failed to get image referrer URL:', error);
+		return '';
+	}
+}
+
+async function buildFileContentWithInlineImages(properties: Property[], noteContent: string): Promise<string> {
+	const frontmatter = await generateFrontmatter(properties);
+	const referrerUrl = await getCurrentReferrerUrl();
+	const markdown = await inlineNoteContentImages(noteContent, referrerUrl);
+
+	return frontmatter + markdown;
 }
 
 // Helper function to get tab info from background script
@@ -909,6 +927,9 @@ async function fillTemplateFieldValues(currentTabId: number, template: Template 
 			? memoizedCompileTemplate(currentTabId!, template.noteContentFormat, variables, currentUrl)
 			: Promise.resolve('')
 	]);
+	const formattedContentWithInlineImages = template.noteContentFormat
+		? await inlineNoteContentImages(formattedContent, currentUrl)
+		: '';
 
 	// Fill property values into existing DOM elements
 	for (let i = 0; i < template.properties.length; i++) {
@@ -942,7 +963,7 @@ async function fillTemplateFieldValues(currentTabId: number, template: Template 
 
 	const noteContentField = document.getElementById('note-content-field') as HTMLTextAreaElement;
 	if (noteContentField) {
-		noteContentField.value = template.noteContentFormat ? formattedContent : '';
+		noteContentField.value = formattedContentWithInlineImages;
 	}
 
 	if (generalSettings.interpreterEnabled) {

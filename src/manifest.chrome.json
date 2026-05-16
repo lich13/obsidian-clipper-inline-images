@@ -3,7 +3,7 @@
 	"default_locale": "en",
 	"name": "Obsidian Web Clipper Inline Images",
 	"homepage_url": "https://obsidian.md/",
-	"version": "1.6.3",
+	"version": "1.6.4",
 	"update_url": "https://lich13.github.io/obsidian-clipper-inline-images/updates.xml",
 	"description": "Save web pages to Obsidian with remote images embedded directly in Markdown as data URIs.",
 	"permissions": [

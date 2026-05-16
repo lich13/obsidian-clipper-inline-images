@@ -31,6 +31,33 @@ describe('inlineRemoteImages', () => {
 		expect(result.markdown).toBe(`![](${dataUri})`);
 	});
 
+	test('converts markdown images with whitespace before the URL group', async () => {
+		const result = await inlineRemoteImages('![]\n(https://example.com/a.png)', {
+			fetchImageAsDataUri: async () => dataUri
+		});
+
+		expect(result.markdown).toBe(`![](${dataUri})`);
+	});
+
+	test('passes page referrer to image fetcher for hotlink-protected CDNs', async () => {
+		let seenReferrer = '';
+		let seenTabId = 0;
+		const sspaiImage = 'https://cdnfile.sspai.com/2026/05/13/f14c808edb5c8bc7bcc9dc089cdaa7f1.png?imageView2/2/w/1120/q/90/interlace/1/ignore-error/1/format/webp';
+		const result = await inlineRemoteImages(`![](${sspaiImage})`, {
+			referrerUrl: 'https://sspai.com/post/109708',
+			tabId: 42,
+			fetchImageAsDataUri: async (_url, context) => {
+				seenReferrer = context.referrerUrl || '';
+				seenTabId = context.tabId || 0;
+				return dataUri;
+			}
+		});
+
+		expect(result.markdown).toBe(`![](${dataUri})`);
+		expect(seenReferrer).toBe('https://sspai.com/post/109708');
+		expect(seenTabId).toBe(42);
+	});
+
 	test('converts duplicate image URLs once', async () => {
 		let calls = 0;
 		const result = await inlineRemoteImages('![](https://example.com/a.png)\n![](https://example.com/a.png)', {

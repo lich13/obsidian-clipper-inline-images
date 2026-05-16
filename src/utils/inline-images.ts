@@ -14,7 +14,14 @@ export interface InlineRemoteImagesResult {
 }
 
 export interface InlineRemoteImagesOptions {
-	fetchImageAsDataUri?: (url: string) => Promise<string>;
+	fetchImageAsDataUri?: (url: string, context: InlineRemoteImagesFetchContext) => Promise<string>;
+	referrerUrl?: string;
+	tabId?: number;
+}
+
+export interface InlineRemoteImagesFetchContext {
+	referrerUrl?: string;
+	tabId?: number;
 }
 
 interface ImageMatch {
@@ -25,7 +32,7 @@ interface ImageMatch {
 	toReplacement: (dataUri: string) => string;
 }
 
-const MARKDOWN_IMAGE_RE = /!\[([^\]\n]*(?:\\\][^\]\n]*)*)\]\(\s*(?:<([^>\n]+)>|([^)\s\n]+))(?:\s+((["'])(?:\\.|(?!\5).)*\5))?\s*\)/g;
+const MARKDOWN_IMAGE_RE = /!\[([^\]\n]*(?:\\\][^\]\n]*)*)\]\s*\(\s*(?:<([^>\n]+)>|([^)\s\n]+))(?:\s+((["'])(?:\\.|(?!\5).)*\5))?\s*\)/g;
 const HTML_IMAGE_RE = /<img\b[^>]*\bsrc\s*=\s*(["'])(https?:\/\/[^"']+)\1[^>]*>/gi;
 
 export async function inlineRemoteImages(
@@ -50,13 +57,17 @@ export async function inlineRemoteImages(
 	}
 
 	const fetchImageAsDataUri = options.fetchImageAsDataUri || defaultFetchImageAsDataUri;
+	const fetchContext: InlineRemoteImagesFetchContext = {
+		referrerUrl: options.referrerUrl,
+		tabId: options.tabId
+	};
 	const cache = new Map<string, Promise<string | null>>();
 
 	const getDataUri = (url: string): Promise<string | null> => {
 		const cached = cache.get(url);
 		if (cached) return cached;
 
-		const promise = fetchImageAsDataUri(url).catch((error: unknown) => {
+		const promise = fetchImageAsDataUri(url, fetchContext).catch((error: unknown) => {
 			const message = error instanceof Error ? error.message : String(error);
 			stats.failed += 1;
 			stats.errors.push({ url, message });
@@ -151,11 +162,13 @@ function isRemoteHttpImageUrl(url: string): boolean {
 	return /^https?:\/\//i.test(url);
 }
 
-async function defaultFetchImageAsDataUri(url: string): Promise<string> {
+async function defaultFetchImageAsDataUri(url: string, context: InlineRemoteImagesFetchContext): Promise<string> {
 	try {
 		const response = await browser.runtime.sendMessage({
 			action: 'fetchImageAsDataUri',
-			url
+			url,
+			referrerUrl: context.referrerUrl,
+			tabId: context.tabId
 		}) as { success?: boolean; dataUri?: string; error?: string };
 
 		if (response?.success && response.dataUri) {
@@ -169,11 +182,11 @@ async function defaultFetchImageAsDataUri(url: string): Promise<string> {
 		console.warn('[Obsidian Clipper] Background image fetch failed, falling back to direct fetch:', error);
 	}
 
-	return directFetchImageAsDataUri(url);
+	return directFetchImageAsDataUri(url, context.referrerUrl);
 }
 
-async function directFetchImageAsDataUri(url: string): Promise<string> {
-	const response = await fetch(url, { credentials: 'include', cache: 'force-cache' });
+async function directFetchImageAsDataUri(url: string, referrerUrl?: string): Promise<string> {
+	const response = await fetch(url, buildImageFetchOptions(referrerUrl));
 
 	if (!response.ok) {
 		throw new Error(`HTTP ${response.status}`);
@@ -182,6 +195,20 @@ async function directFetchImageAsDataUri(url: string): Promise<string> {
 	const mimeType = getImageMimeType(response.headers.get('content-type') || '', response.url || url);
 	const base64 = arrayBufferToBase64(await response.arrayBuffer());
 	return `data:${mimeType};base64,${base64}`;
+}
+
+function buildImageFetchOptions(referrerUrl?: string): RequestInit {
+	const options: RequestInit = {
+		credentials: 'include',
+		cache: 'force-cache'
+	};
+
+	if (referrerUrl && isRemoteHttpImageUrl(referrerUrl)) {
+		options.referrer = referrerUrl;
+		options.referrerPolicy = 'unsafe-url';
+	}
+
+	return options;
 }
 
 function getImageMimeType(contentType: string, url: string): string {

@@ -109,6 +109,60 @@ declare global {
 		metaTags: { name?: string | null; property?: string | null; content: string | null }[];
 	}
 
+	async function fetchImageAsDataUriFromPage(url: string): Promise<{ success: boolean; dataUri?: string; error?: string }> {
+		try {
+			const response = await fetch(url, {
+				credentials: 'include',
+				cache: 'force-cache',
+				referrer: document.URL,
+				referrerPolicy: 'unsafe-url'
+			});
+			if (!response.ok) {
+				return { success: false, error: `HTTP ${response.status}` };
+			}
+
+			const mimeType = getImageMimeType(response.headers.get('content-type') || '', response.url || url);
+			const dataUri = `data:${mimeType};base64,${arrayBufferToBase64(await response.arrayBuffer())}`;
+			return { success: true, dataUri };
+		} catch (error) {
+			return { success: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	}
+
+	function getImageMimeType(contentType: string, url: string): string {
+		const normalizedContentType = contentType.split(';')[0].trim().toLowerCase();
+		if (normalizedContentType.startsWith('image/')) {
+			return normalizedContentType;
+		}
+
+		let pathname = url;
+		try {
+			pathname = new URL(url).pathname;
+		} catch {
+			// Use the raw URL as a fallback for extension and malformed URLs.
+		}
+
+		pathname = pathname.toLowerCase();
+		if (pathname.endsWith('.png')) return 'image/png';
+		if (pathname.endsWith('.jpg') || pathname.endsWith('.jpeg')) return 'image/jpeg';
+		if (pathname.endsWith('.webp')) return 'image/webp';
+		if (pathname.endsWith('.gif')) return 'image/gif';
+		if (pathname.endsWith('.svg')) return 'image/svg+xml';
+		if (pathname.endsWith('.avif')) return 'image/avif';
+		return 'image/jpeg';
+	}
+
+	function arrayBufferToBase64(buffer: ArrayBuffer): string {
+		let binary = '';
+		const bytes = new Uint8Array(buffer);
+		const chunkSize = 0x1000;
+		for (let index = 0; index < bytes.length; index += chunkSize) {
+			const chunk = bytes.subarray(index, index + chunkSize);
+			binary += String.fromCharCode(...chunk);
+		}
+		return btoa(binary);
+	}
+
 	browser.runtime.onMessage.addListener((request: any, sender, sendResponse) => {
 		// If a newer generation of this content script has been injected,
 		// yield to it rather than responding from a potentially stale context.
@@ -118,6 +172,11 @@ declare global {
 
 		if (request.action === "ping") {
 			sendResponse({});
+			return true;
+		}
+
+		if (request.action === "fetchImageAsDataUriFromPage") {
+			fetchImageAsDataUriFromPage(request.url).then(sendResponse);
 			return true;
 		}
 
@@ -157,7 +216,9 @@ declare global {
 					const defuddled = parseForClip(document);
 
 					// Convert HTML content to markdown
-					const { markdown } = await inlineRemoteImages(createMarkdownContent(defuddled.content, document.URL));
+					const { markdown } = await inlineRemoteImages(createMarkdownContent(defuddled.content, document.URL), {
+						referrerUrl: document.URL
+					});
 
 					// Copy to clipboard
 					const textArea = document.createElement("textarea");
@@ -180,7 +241,9 @@ declare global {
 			flattenShadowDom(document).then(async () => {
 				try {
 					const defuddled = parseForClip(document);
-					const { markdown } = await inlineRemoteImages(createMarkdownContent(defuddled.content, document.URL));
+					const { markdown } = await inlineRemoteImages(createMarkdownContent(defuddled.content, document.URL), {
+						referrerUrl: document.URL
+					});
 					const title = defuddled.title || document.title || 'Untitled';
 					const fileName = title.replace(/[/\\?%*:|"<>]/g, '-');
 					await saveFile({
