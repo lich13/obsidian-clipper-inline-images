@@ -1,0 +1,36 @@
+name: Browser extension checks
+
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', 'package*.json', 'webpack.config.js', 'scripts/test-browser-extension.py', '.github/workflows/browser-checks.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chromium:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm test
+      - run: npm run build:chrome
+      - run: python -m pip install playwright==1.63.0
+      - run: python -m playwright install --with-deps chromium
+      - run: python scripts/test-browser-extension.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chromium-unpacked-extension
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
